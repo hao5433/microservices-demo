@@ -37,6 +37,9 @@ jobs:
           docker push \
           ghcr.io/${{ github.repository_owner }}/user-service:latest
 
+      - name: Trigger Render Deploy
+        run: curl -X POST ${{ secrets.RENDER_DEPLOY_HOOK }}
+
   order-service:
 
     runs-on: ubuntu-latest
