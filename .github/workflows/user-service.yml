@@ -1,0 +1,49 @@
+name: User Service CI/CD
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'user-service/**'
+
+jobs:
+
+  build:
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+
+      - uses: actions/checkout@v4
+
+      - name: Login GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" |
+          docker login ghcr.io \
+          -u ${{ github.actor }} \
+          --password-stdin
+
+      - name: Test
+        working-directory: user-service
+        run: ./mvnw test
+
+      - name: Build Image
+        run: |
+          docker build \
+          -t ghcr.io/${{ github.repository_owner }}/user-service:latest \
+          ./user-service
+
+      - name: Push Image
+        run: |
+          docker push \
+          ghcr.io/${{ github.repository_owner }}/user-service:latest
+
+      - name: Deploy Render
+        run: |
+          curl -X POST \
+          "${{ secrets.RENDER_USER_HOOK }}"
