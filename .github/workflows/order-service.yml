@@ -64,11 +64,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - name: Download Workspace
-        uses: actions/download-artifact@v4
-        with:
-          name: order-artifacts
-          path: .
+      - uses: actions/checkout@v4
 
       - name: Login GHCR
         run: |
