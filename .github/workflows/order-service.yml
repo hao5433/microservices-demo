@@ -51,6 +51,10 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
 
+      - name: Grant execute permission for mvnw
+        working-directory: order-service
+        run: chmod +x ./mvnw
+
       - name: Test
         working-directory: order-service
         run: ./mvnw test
