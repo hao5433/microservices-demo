@@ -35,13 +35,6 @@ jobs:
         working-directory: user-service
         run: ./mvnw clean compile
 
-      # Lưu lại source đã compile để job Test và các job sau dùng lại, không cần build lại
-      - name: Upload Build Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-artifacts
-          path: .
-
   # 2. JOB TEST (Chỉ chạy khi Build thành công)
   test:
     runs-on: ubuntu-latest
