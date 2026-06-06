@@ -8,6 +8,6 @@ public class PaymentController {
 
     @GetMapping("/health")
     public String health() {
-        return "Payment Service V2";
+        return "Payment Service V3";
     }
 }
