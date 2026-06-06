@@ -26,12 +26,6 @@ jobs:
         working-directory: payment-service
         run: ./mvnw clean compile
 
-      # Lưu lại source để các job sau kế thừa không phải tải lại từ đầu
-      - name: Upload Workspace
-        uses: actions/upload-artifact@v4
-        with:
-          name: payment-artifacts
-          path: .
 
   # 2. JOB TEST (Chỉ chạy khi Build thành công)
   test:
