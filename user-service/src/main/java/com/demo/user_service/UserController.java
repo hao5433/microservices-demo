@@ -8,6 +8,6 @@ public class UserController {
 
     @GetMapping("/health")
     public String health() {
-        return "User Service V2";
+        return "User Service V1";
     }
 }
