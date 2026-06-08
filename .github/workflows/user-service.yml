@@ -17,7 +17,7 @@ env:
 
 jobs:
 
-  # 1. JOB BUILD (Chỉ biên dịch code)
+  # 1. JOB BUILD — Biên dịch và lưu artifact
   build:
     runs-on: ubuntu-latest
     steps:
@@ -31,11 +31,23 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
 
-      - name: Compile Code
+      - name: Grant execute permission for mvnw
         working-directory: user-service
-        run: ./mvnw clean compile
+        run: chmod +x ./mvnw
 
-  # 2. JOB TEST (Chỉ chạy khi Build thành công)
+      - name: Compile and Package
+        working-directory: user-service
+        run: ./mvnw clean package -DskipTests
+
+      # Lưu artifact để các job sau dùng lại, tránh build lại nhiều lần
+      - name: Upload JAR Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: user-service-jar
+          path: user-service/target/*.jar
+          retention-days: 1
+
+  # 2. JOB TEST — Chỉ chạy khi Build thành công
   test:
     runs-on: ubuntu-latest
     needs: build
@@ -50,24 +62,39 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
 
+      - name: Grant execute permission for mvnw
+        working-directory: user-service
+        run: chmod +x ./mvnw
+
       - name: Run Automated Tests
         working-directory: user-service
         run: ./mvnw test
 
-  # 3. JOB PUSH IMAGE (Chỉ chạy khi Test thành công)
+  # 3. JOB PUSH IMAGE — Chỉ chạy khi Test thành công
   push-image:
     runs-on: ubuntu-latest
     needs: test
+    outputs:
+      image-tag: ${{ steps.meta.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Source
+        uses: actions/checkout@v4
 
-      - name: Login GHCR
+      # Download artifact đã build từ job build, không cần build lại
+      - name: Download JAR Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: user-service-jar
+          path: user-service/target/
+
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Tạo tag theo SHA commit để có thể rollback về version cụ thể
       - name: Extract Docker Metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -75,7 +102,7 @@ jobs:
           images: ${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest
-            type=sha
+            type=sha,prefix=sha-
 
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v5
@@ -85,11 +112,50 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-  # 4. JOB DEPLOY (Chỉ chạy khi Push Image thành công)
-  deploy:
+  # 4. JOB DEPLOY STAGING — Deploy lên môi trường staging trước
+  deploy-staging:
     runs-on: ubuntu-latest
     needs: push-image
+    environment: staging   # Dùng GitHub Environment để quản lý secrets riêng cho staging
     steps:
-      - name: Deploy Render
+      - name: Deploy to Staging
         run: |
-          curl -X POST "${{ secrets.RENDER_USER_HOOK }}"
+          curl --fail -X POST "${{ secrets.RENDER_USER_STAGING_HOOK }}"
+
+      - name: Health Check Staging
+        run: |
+          echo "Waiting for service to start..."
+          sleep 30
+          curl --fail --retry 5 --retry-delay 10 \
+            "${{ secrets.USER_SERVICE_STAGING_URL }}/actuator/health"
+
+  # 5. JOB DEPLOY PRODUCTION — Chỉ chạy sau khi staging OK, cần manual approval
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    environment: production   # Cấu hình Required Reviewers trên GitHub để yêu cầu approval
+    steps:
+      - name: Deploy to Production
+        run: |
+          curl --fail -X POST "${{ secrets.RENDER_USER_HOOK }}"
+
+      - name: Health Check Production
+        run: |
+          echo "Waiting for service to start..."
+          sleep 30
+          curl --fail --retry 5 --retry-delay 10 \
+            "${{ secrets.USER_SERVICE_PROD_URL }}/actuator/health"
+
+      - name: Notify Success
+        if: success()
+        run: |
+          echo "✅ user-service deployed successfully to production (commit: ${{ github.sha }})"
+
+      - name: Notify Failure
+        if: failure()
+        run: |
+          echo "❌ user-service deployment FAILED (commit: ${{ github.sha }})"
+          # Gửi thông báo qua Slack nếu có webhook
+          # curl -X POST "${{ secrets.SLACK_WEBHOOK }}" \
+          #   -H 'Content-type: application/json' \
+          #   -d '{"text":"❌ user-service deployment FAILED! Commit: ${{ github.sha }}"}'
