@@ -120,14 +120,22 @@ jobs:
     steps:
       - name: Deploy to Staging
         run: |
-          curl --fail -X POST "${{ secrets.RENDER_USER_STAGING_HOOK }}"
+          if [ -z "${{ secrets.RENDER_USER_STAGING_HOOK }}" ]; then
+            echo "⚠️  RENDER_USER_STAGING_HOOK secret is not set, skipping deploy."
+          else
+            curl --fail -X POST "${{ secrets.RENDER_USER_STAGING_HOOK }}"
+          fi
 
       - name: Health Check Staging
         run: |
-          echo "Waiting for service to start..."
-          sleep 30
-          curl --fail --retry 5 --retry-delay 10 \
-            "${{ secrets.USER_SERVICE_STAGING_URL }}/actuator/health"
+          if [ -z "${{ secrets.USER_SERVICE_STAGING_URL }}" ]; then
+            echo "⚠️  USER_SERVICE_STAGING_URL secret is not set, skipping health check."
+          else
+            echo "Waiting for service to start..."
+            sleep 30
+            curl --fail --retry 5 --retry-delay 10 \
+              "${{ secrets.USER_SERVICE_STAGING_URL }}/actuator/health"
+          fi
 
   # 5. JOB DEPLOY PRODUCTION — Chỉ chạy sau khi staging OK, cần manual approval
   deploy-production:
@@ -137,14 +145,22 @@ jobs:
     steps:
       - name: Deploy to Production
         run: |
-          curl --fail -X POST "${{ secrets.RENDER_USER_HOOK }}"
+          if [ -z "${{ secrets.RENDER_USER_HOOK }}" ]; then
+            echo "⚠️  RENDER_USER_HOOK secret is not set, skipping deploy."
+          else
+            curl --fail -X POST "${{ secrets.RENDER_USER_HOOK }}"
+          fi
 
       - name: Health Check Production
         run: |
-          echo "Waiting for service to start..."
-          sleep 30
-          curl --fail --retry 5 --retry-delay 10 \
-            "${{ secrets.USER_SERVICE_PROD_URL }}/actuator/health"
+          if [ -z "${{ secrets.USER_SERVICE_PROD_URL }}" ]; then
+            echo "⚠️  USER_SERVICE_PROD_URL secret is not set, skipping health check."
+          else
+            echo "Waiting for service to start..."
+            sleep 30
+            curl --fail --retry 5 --retry-delay 10 \
+              "${{ secrets.USER_SERVICE_PROD_URL }}/actuator/health"
+          fi
 
       - name: Notify Success
         if: success()

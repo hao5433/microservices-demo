@@ -7,13 +7,22 @@ on:
     paths:
       - 'payment-service/**'
 
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/payment-service
+
 jobs:
 
-  # 1. JOB BUILD (Kiểm tra compile/build thử ứng dụng Java)
+  # 1. JOB BUILD — Biên dịch và lưu artifact
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Source
+        uses: actions/checkout@v4
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -22,17 +31,29 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
 
-      - name: Compile Code
+      - name: Grant execute permission for mvnw
         working-directory: payment-service
-        run: ./mvnw clean compile
+        run: chmod +x ./mvnw
 
+      - name: Compile and Package
+        working-directory: payment-service
+        run: ./mvnw clean package -DskipTests
 
-  # 2. JOB TEST (Chỉ chạy khi Build thành công)
+      # Lưu artifact để các job sau dùng lại, tránh build lại nhiều lần
+      - name: Upload JAR Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: payment-service-jar
+          path: payment-service/target/*.jar
+          retention-days: 1
+
+  # 2. JOB TEST — Chỉ chạy khi Build thành công
   test:
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Source
+        uses: actions/checkout@v4
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -41,43 +62,116 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
 
-      - name: Test
+      - name: Grant execute permission for mvnw
+        working-directory: payment-service
+        run: chmod +x ./mvnw
+
+      - name: Run Automated Tests
         working-directory: payment-service
         run: ./mvnw test
 
-  # 3. JOB PUSH IMAGE (Chỉ chạy khi Test thành công)
+  # 3. JOB PUSH IMAGE — Chỉ chạy khi Test thành công
   push-image:
     runs-on: ubuntu-latest
     needs: test
-    permissions:
-      contents: read
-      packages: write
+    outputs:
+      image-tag: ${{ steps.meta.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Login GHCR
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | \
-          docker login ghcr.io \
-          -u ${{ github.actor }} \
-          --password-stdin
+      - name: Checkout Source
+        uses: actions/checkout@v4
 
-      - name: Build Image
-        run: |
-          docker build \
-          -t ghcr.io/${{ github.repository_owner }}/payment-service:latest \
-          ./payment-service
+      # Download artifact đã build từ job build, không cần build lại
+      - name: Download JAR Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: payment-service-jar
+          path: payment-service/target/
 
-      - name: Push Image
-        run: |
-          docker push \
-          ghcr.io/${{ github.repository_owner }}/payment-service:latest
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-  # 4. JOB DEPLOY (Chỉ chạy khi đã Push Image thành công)
-  deploy:
+      # Tạo tag theo SHA commit để có thể rollback về version cụ thể
+      - name: Extract Docker Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./payment-service
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  # 4. JOB DEPLOY STAGING — Deploy lên môi trường staging trước
+  deploy-staging:
     runs-on: ubuntu-latest
     needs: push-image
+    environment: staging   # Dùng GitHub Environment để quản lý secrets riêng cho staging
     steps:
-      - name: Deploy Render
+      - name: Deploy to Staging
         run: |
-          curl -X POST \
-          "${{ secrets.RENDER_PAYMENT_HOOK }}"
+          if [ -z "${{ secrets.RENDER_PAYMENT_STAGING_HOOK }}" ]; then
+            echo "⚠️  RENDER_PAYMENT_STAGING_HOOK secret is not set, skipping deploy."
+          else
+            curl --fail -X POST "${{ secrets.RENDER_PAYMENT_STAGING_HOOK }}"
+          fi
+
+      - name: Health Check Staging
+        run: |
+          if [ -z "${{ secrets.PAYMENT_SERVICE_STAGING_URL }}" ]; then
+            echo "⚠️  PAYMENT_SERVICE_STAGING_URL secret is not set, skipping health check."
+          else
+            echo "Waiting for service to start..."
+            sleep 30
+            curl --fail --retry 5 --retry-delay 10 \
+              "${{ secrets.PAYMENT_SERVICE_STAGING_URL }}/actuator/health"
+          fi
+
+  # 5. JOB DEPLOY PRODUCTION — Chỉ chạy sau khi staging OK, cần manual approval
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    environment: production   # Cấu hình Required Reviewers trên GitHub để yêu cầu approval
+    steps:
+      - name: Deploy to Production
+        run: |
+          if [ -z "${{ secrets.RENDER_PAYMENT_HOOK }}" ]; then
+            echo "⚠️  RENDER_PAYMENT_HOOK secret is not set, skipping deploy."
+          else
+            curl --fail -X POST "${{ secrets.RENDER_PAYMENT_HOOK }}"
+          fi
+
+      - name: Health Check Production
+        run: |
+          if [ -z "${{ secrets.PAYMENT_SERVICE_PROD_URL }}" ]; then
+            echo "⚠️  PAYMENT_SERVICE_PROD_URL secret is not set, skipping health check."
+          else
+            echo "Waiting for service to start..."
+            sleep 30
+            curl --fail --retry 5 --retry-delay 10 \
+              "${{ secrets.PAYMENT_SERVICE_PROD_URL }}/actuator/health"
+          fi
+
+      - name: Notify Success
+        if: success()
+        run: |
+          echo "✅ payment-service deployed successfully to production (commit: ${{ github.sha }})"
+
+      - name: Notify Failure
+        if: failure()
+        run: |
+          echo "❌ payment-service deployment FAILED (commit: ${{ github.sha }})"
+          # Gửi thông báo qua Slack nếu có webhook
+          # curl -X POST "${{ secrets.SLACK_WEBHOOK }}" \
+          #   -H 'Content-type: application/json' \
+          #   -d '{"text":"❌ payment-service deployment FAILED! Commit: ${{ github.sha }}"}'
